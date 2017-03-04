@@ -1,6 +1,7 @@
 package com.soywiz.korio.vfs
 
-import com.soywiz.korio.async.*
+import com.soywiz.korio.async.sync
+import com.soywiz.korio.async.syncTest
 import org.junit.Assert
 import org.junit.Test
 
@@ -11,14 +12,14 @@ class ReadSpecialTest {
 		operator fun set(x: Int, y: Int, v: Char): Unit = run { data[index(x, y)] = v }
 	}
 
-	suspend fun VfsFile.readCharArray2() = asyncFun {
+	suspend fun VfsFile.readCharArray2(): CharArray2 {
 		val text = this.readString()
 		val side = Math.sqrt(text.length.toDouble()).toInt()
-		CharArray2(side, side, text.toCharArray())
+		return CharArray2(side, side, text.toCharArray())
 	}
 
 	@Test
-	fun testReadSpecial2() = sync {
+	fun testReadSpecial2() = syncTest {
 		val temp = MemoryVfs()
 		val f2 = temp["korio.chararray2"]
 		f2.writeString("123456789")

@@ -1,17 +1,23 @@
 group 'com.soywiz'
-version "$korioVersion"
+version "$korVersion"
 
-apply plugin: 'java'
+if (project.hasProperty('useAndroid')) {
+	project.apply plugin: 'com.android.library'
+	apply plugin: 'kotlin-android'
+} else {
+	project.apply plugin: 'java'
+	apply plugin: 'kotlin'
+	compileJava.options.encoding = 'UTF-8'
+	compileTestJava.options.encoding = 'UTF-8'
+}
 apply plugin: 'maven'
 apply plugin: 'signing'
 apply plugin: 'maven-publish'
-apply plugin: 'com.jfrog.bintray'
 
-compileJava.options.encoding = 'UTF-8'
-compileTestJava.options.encoding = 'UTF-8'
+sourceCompatibility = 1.7
+targetCompatibility = 1.7
 
-sourceCompatibility = 1.6
-targetCompatibility = 1.6
+kotlin { experimental { coroutines 'enable' } }
 
 configurations {
 	provided
@@ -48,7 +54,7 @@ task sourcesJar(type: Jar) {
 }
 
 artifacts {
-	archives jar
+	//archives jar
 	archives javadocJar
 	archives sourcesJar
 }
@@ -112,28 +118,5 @@ publishing {
 	}
 }
 
-// gradle bintrayUpload
-if (project.hasProperty('BINTRAY_USER')) {
-	bintray {
-		// https://github.com/bintray/gradle-bintray-plugin#buildgradle
-		//Properties bintray = new Properties()
-		//bintray.load(new FileInputStream(System.getProperty("user.home") + "/.bintray.properties"))
-
-		user = BINTRAY_USER
-		key = BINTRAY_KEY
-		publications = ['MyPublication']
-		publish = true
-		override = true
-
-		pkg {
-			repo = "soywiz-maven"
-			name = project.name
-			userOrg = 'soywiz'
-			licenses = ['Apache-2.0']
-			vcsUrl = 'https://github.com/soywiz/korio.git'
-		}
-	}
-}
-
-task deploy(dependsOn: ['install', 'bintrayUpload', 'uploadArchives']) {
+task deploy(dependsOn: ['install', 'uploadArchives']) {
 }

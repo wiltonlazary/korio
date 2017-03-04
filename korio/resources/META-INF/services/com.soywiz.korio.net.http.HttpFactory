@@ -1,0 +1,3 @@
+com.soywiz.korio.net.http.HttpFactoryJvm    # <target=java>
+com.soywiz.korio.net.http.HttpFactoryJs     # <target=js>
+com.soywiz.korio.net.http.HttpFactoryCSharp # <target=cs>

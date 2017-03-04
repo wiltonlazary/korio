@@ -1,6 +1,5 @@
 package com.soywiz.korio.vfs
 
-import com.soywiz.korio.util.OS
 import java.io.File
 import java.util.*
 
@@ -28,7 +27,7 @@ object VfsUtil {
 
 	fun combine(base: String, access: String): String = if (isAbsolute(access)) normalize(access) else normalize(base + "/" + access)
 
-	fun lightCombine(base: String, access: String): String = if (base.isNotEmpty()) "$base/$access" else "$access"
+	fun lightCombine(base: String, access: String): String = if (base.isNotEmpty()) base.trimEnd('/') + "/" + access.trim('/') else "$access"
 
 	fun isAbsolute(base: String): Boolean {
 		if (base.isEmpty()) return false

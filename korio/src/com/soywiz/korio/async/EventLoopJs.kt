@@ -1,13 +1,15 @@
 package com.soywiz.korio.async
 
-import com.jtransc.js.global
-import com.jtransc.js.jsFunctionRaw0
-import com.jtransc.js.methods
+import com.jtransc.js.*
+import com.soywiz.korio.util.OS
 import java.io.Closeable
 import java.util.*
 
 @Suppress("unused")
-class EventLoopJs : EventLoop {
+class EventLoopJs : EventLoop() {
+	override val available: Boolean get() = OS.isJs
+	override val priority: Int = 2000
+
 	override fun init(): Unit {
 	}
 
@@ -21,8 +23,8 @@ class EventLoopJs : EventLoop {
 			insideImmediate = true
 			try {
 				while (immediateHandlers.isNotEmpty()) {
-					val handler = immediateHandlers.removeFirst()
-					handler()
+					val fhandler = immediateHandlers.removeFirst()
+					fhandler()
 				}
 			} finally {
 				insideImmediate = false
@@ -31,14 +33,14 @@ class EventLoopJs : EventLoop {
 	}
 
 	override fun setTimeout(ms: Int, callback: () -> Unit): Closeable {
-		val id = global.methods["setTimeout"](jsFunctionRaw0 { callback() }, ms)
+		val id = global.call("setTimeout", jsFunctionRaw0 { callback() }, ms)
 		//println("setTimeout($ms)")
-		return Closeable { global.methods["clearTimeout"](id) }
+		return Closeable { global.call("clearTimeout", id) }
 	}
 
 	override fun setInterval(ms: Int, callback: () -> Unit): Closeable {
 		//println("setInterval($ms)")
-		val id = global.methods["setInterval"](jsFunctionRaw0 { callback() }, ms)
-		return Closeable { global.methods["clearInterval"](id) }
+		val id = global.call("setInterval", jsFunctionRaw0 { callback() }, ms)
+		return Closeable { global.call("clearInterval", id) }
 	}
 }

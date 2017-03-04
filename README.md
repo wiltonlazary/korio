@@ -3,18 +3,14 @@
 [![Build Status](https://travis-ci.org/soywiz/korio.svg?branch=master)](https://travis-ci.org/soywiz/korio)
 [![Maven Version](https://img.shields.io/github/tag/soywiz/korio.svg?style=flat&label=maven)](http://search.maven.org/#search%7Cga%7C1%7Ca%3A%22korio%22)
 
-[KORIO](http://github.com/soywiz/korio) - [KORIM](http://github.com/soywiz/korim) - [KORUI](http://github.com/soywiz/korui)
+![](https://raw.githubusercontent.com/soywiz/kor/master/logos/128/korio.png)
+
+[All KOR libraries](https://github.com/soywiz/kor)
 
 Use with gradle (uploaded to maven central):
 
 ```
-compile "com.soywiz:korio:$korioVersion"
-```
-
-I'm also uploading it to a personal bintray repository:
-
-```
-maven { url "https://dl.bintray.com/soywiz/soywiz-maven" }
+compile "com.soywiz:korio:$korVersion"
 ```
 
 This is a kotlin coroutine library that provides asynchronous non-blocking I/O and virtual filesystem operations
@@ -27,31 +23,6 @@ korio you will be able to target several platforms without any problem.
 
 It has a modern and useful API. And all works in Java 7, so it is compatible with Android.
 
-### Extended libraries
-
-I have also created other useful multi-target libraries using korio as core.
-
-#### [Korim](http://github.com/soywiz/korim)
-
-Korim is an imaging library with just korio as dependency. It provides bitmap manipulation, and
-pure kotlin image decoding (PNG, JPEG, BMP and TGA), while allowing extending it and some drawing
-geometry primitives. It also supports native font loading and bitmap font loading.
-Korim supports all korio targets including JVM, Javascript and Android and provide native image
-loading in those targets for fastest performance. Also provides generating generate bitmap fonts
-at runtime using native font facilities for each supported target.
-
-### [Korui](http://github.com/soywiz/korui)
-
-Korui is a very portable user interface library. Uses korim and korio as dependencies. And allow
-creating interfaces for JVM (AWT), Android and JavaScript (HTML5) at this point with a clean and
-easy to use interface, but would allow other targets in the future like C++ SDL, iOS,
-Universal Windows UWP and so on.
-It provides some components and layouts. It internally creates lightweight native components for each
-platform and resizes them using common consistent korui layouts. Supported layouts are similar to
-Android ones, but allows creating them using Kotlin DSL. Portable imaging uses Korim and for I/O and asynchronous
-facilities, it uses Korio.
-
-
 ### Event Loop and async primitives
 
 Korio provides an Event Loop that integrates with each supported platform seamlessly.
@@ -63,6 +34,10 @@ You can even create your own event loop implementation and hook it.
 Korio also provides some async primitives until they are officially available
 at a common place like kotlinx.coroutines, and will provide typealias + @Deprecated for the future migration
 when available.
+
+### Serialization
+
+Embeded **Json**, **Xml** and **Yaml** parsers. Can also write Json (with pretty print support) and Xml. Support Json to Object mapping with kotlin data classes suport.
 
 ### Streams
 
@@ -87,8 +62,29 @@ writeBytes, write8, write16_le, write32_le, write64_le, writeF32_le, writeF64_le
 
 ### AsyncClient + AsyncServer
 
-Korio includes a TCP client (implementing AsyncStream) and a TCP server with a lazy asynchronous connection iterator.
+Korio includes a TCP client (implementing AsyncStream) and a TCP server with a lazy asynchronous connection iterator for all supported platforms but browser javascript. 
 
+### WebSocketClient
+
+Korio includes a WebSocket client. It has two implementations: one simple and generic for targets supporting AsyncClient and other for browser javascript.
+So this is supported on all targets.
+
+### HttpClient
+
+Korio includes a HttpClient client that uses available native implementations. UrlVfs uses HttpClient.
+
+### Databases
+
+#### Redis
+
+Korio includes an extension with some database/cache clients. At this point, there is a Redis client implementation,
+but will provide more soon.
+
+#### DynamoDB
+
+Korio includes a pure Kotlin DynamoDB asynchronous simple and fast implementation using Korio's HttpClient implementations, which leverages:
+jvm, android, js (browser and nodejs) + pure asynchronous http clients from vertx when including korio-vertx. 
+ 
 ### VFS
 
 Korio provides an asynchronous Virtual File System extensible engine.
@@ -145,6 +141,10 @@ val mem = MemoryVfs(mapOf(
 
 Korio includes an open base NodeVfs to support node based vfs like in-memory vfs.
 
+### S3Vfs (Amazon S3 Vfs)
+
+In the korio-ext-amazon-s3 submodule, there is a Amazon S3 Client without external dependencies that is implemented as a VFS for convenience. 
+
 ### PathInfo
 
 Korio includes a PathInfo utility integrated with VfsFile in order to obtain path information (folder, basename, extension...)
@@ -160,7 +160,7 @@ ssh or ftp commands as an example.
 There are several filesystems included and you can find examples of usage in the test folder:
 
 ```kotlin
-LocalVfs, UrlVfs, ZipVfs, IsoVfs, ResourcesVfs, JailVfs, MountableVfs, MemoryVfs
+LocalVfs, UrlVfs, ZipVfs, IsoVfs, ResourcesVfs, JailVfs, MountableVfs, MemoryVfs, S3Vfs
 ```
 
 For Vfs implementations:
@@ -221,6 +221,9 @@ class VfsFile {
 	suspend fun execToString(vararg cmdAndArgs: String, charset: Charset = Charsets.UTF_8): String
 	suspend fun passthru(cmdAndArgs: List<String>, charset: Charset = Charsets.UTF_8): Int
 	suspend fun passthru(vararg cmdAndArgs: String, charset: Charset = Charsets.UTF_8): Int
+	
+	// File watching
+	suspend fun watch(handler: (VfsFileEvent) -> Unit): Closeable = vfs.watch(path, handler)
 
     // Jail this file so generated VfsFile can't access ancestors
     fun jail(): VfsFile = JailVfs(this)
@@ -256,6 +259,7 @@ or whatever you need.
 
 Also, since you are using a single interface (VfsFile), you can create generic code that will work for files, for network,
 for redis...
+You can use a MemoryVfs for testing while using a real folder in your code without having to mock code.
 
 ### Targets
 

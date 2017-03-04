@@ -1,23 +1,66 @@
+@file:Suppress("EXPERIMENTAL_FEATURE_WARNING")
+
 package com.soywiz.korio.async
 
-class Signal<T> {
-	internal val handlers = arrayListOf<(T) -> Unit>()
+import com.soywiz.korio.ds.LinkedList2
+import java.io.Closeable
 
-	fun add(handler: (T) -> Unit) {
-		synchronized(handlers) { handlers += handler }
+class Signal<T>(val onRegister: () -> Unit = {}) : AsyncSequence<T> {
+	inner class Node(val once: Boolean, val item: (T) -> Unit) : LinkedList2.Node<Node>(), Closeable {
+		override fun close() {
+			handlers.remove(this)
+		}
+	}
+
+	private var handlers = LinkedList2<Node>()
+
+	val listenerCount: Int get() = handlers.size
+
+	fun once(handler: (T) -> Unit): Closeable = _add(true, handler)
+	fun add(handler: (T) -> Unit): Closeable = _add(false, handler)
+
+	private fun _add(once: Boolean, handler: (T) -> Unit): Closeable {
+		onRegister()
+		val node = Node(once, handler)
+		handlers.add(node)
+		return node
 	}
 
 	operator fun invoke(value: T) {
-		for (handler in synchronized(handlers) { handlers.toList() }) {
-			handler(value)
+		EventLoop.queue {
+			val it = handlers.iterator()
+			while (it.hasNext()) {
+				val node = it.next()
+				if (node.once) it.remove()
+				node.item(value)
+			}
 		}
-		//while (handlers.isNotEmpty()) {
-		//	val handler = handlers.remove()
-		//	handler.invoke(value)
-		//}
 	}
 
-	operator fun invoke(value: (T) -> Unit) = add(value)
+	operator fun invoke(value: (T) -> Unit): Closeable = add(value)
+
+	override fun iterator(): AsyncIterator<T> = asyncGenerate {
+		while (true) {
+			yield(waitOne())
+		}
+	}.iterator()
+}
+
+fun <TI, TO> Signal<TI>.mapSignal(transform: (TI) -> TO): Signal<TO> {
+	val out = Signal<TO>()
+	this.add { out(transform(it)) }
+	return out
 }
 
 operator fun Signal<Unit>.invoke() = invoke(Unit)
+
+suspend fun <T> Signal<T>.waitOne(): T = suspendCancellableCoroutine { c ->
+	var close: Closeable? = null
+	close = once {
+		close?.close()
+		c.resume(it)
+	}
+	c.onCancel {
+		close?.close()
+	}
+}

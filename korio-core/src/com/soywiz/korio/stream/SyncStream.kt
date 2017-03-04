@@ -146,8 +146,16 @@ inline fun MemorySyncStreamToByteArray(callback: SyncStream.() -> Unit): ByteArr
 	return buffer.toByteArray()
 }
 
-val SyncStream.hasLength: Boolean get() = try { length; true } catch (e: Throwable) { false }
-val SyncStream.hasAvailable: Boolean get() = try { available; true } catch (e: Throwable) { false }
+val SyncStream.hasLength: Boolean get() = try {
+	length; true
+} catch (e: Throwable) {
+	false
+}
+val SyncStream.hasAvailable: Boolean get() = try {
+	available; true
+} catch (e: Throwable) {
+	false
+}
 
 fun SyncStream.toByteArray(): ByteArray {
 	if (hasLength) {
@@ -186,7 +194,17 @@ fun SyncStream.slice(): SyncStream = SyncStream(SliceSyncStreamBase(this.base, 0
 fun SyncStream.slice(range: IntRange): SyncStream = sliceWithBounds(range.start.toLong(), (range.endInclusive.toLong() + 1))
 fun SyncStream.slice(range: LongRange): SyncStream = sliceWithBounds(range.start, (range.endInclusive + 1))
 
-fun SyncStream.sliceWithBounds(start: Long, end: Long): SyncStream = SyncStream(SliceSyncStreamBase(this.base, start, end))
+fun SyncStream.sliceWithBounds(start: Long, end: Long): SyncStream {
+	val len = this.length
+	val clampedStart = start.clamp(0, len)
+	val clampedEnd = end.clamp(0, len)
+	if (this.base is SliceSyncStreamBase) {
+		return SliceSyncStreamBase(this.base.base, this.base.baseStart + clampedStart, this.base.baseStart + clampedEnd).toSyncStream()
+	} else {
+		return SliceSyncStreamBase(this.base, clampedStart, clampedEnd).toSyncStream()
+	}
+}
+
 fun SyncStream.sliceWithSize(position: Long, length: Long): SyncStream = sliceWithBounds(position, position + length)
 
 fun SyncStream.readSlice(length: Long): SyncStream = sliceWithSize(position, length).apply {
@@ -325,6 +343,7 @@ fun SyncStreamBase.toSyncStream(position: Long = 0L) = SyncStream(this, position
 
 fun ByteArray.openSync(mode: String = "r"): SyncStream = MemorySyncStreamBase(ByteArrayBuffer(this)).toSyncStream(0L)
 fun ByteArray.openAsync(mode: String = "r"): AsyncStream = openSync(mode).toAsync()
+fun String.openAsync(charset: Charset = Charsets.UTF_8): AsyncStream = toByteArray(charset).openSync("r").toAsync()
 fun File.openSync(mode: String = "r"): SyncStream = FileSyncStreamBase(this, mode).toSyncStream()
 
 fun SyncStream.writeStream(source: SyncStream): Unit = source.copyTo(this)

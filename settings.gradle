@@ -1,8 +1,22 @@
 rootProject.name = 'korio-root'
+
+def includeProj(name, folder) {
+	include name
+	project(name).projectDir = file(folder)
+}
+
 include(
 		'korio-core',
 		'korio',
 		'korio-kotlinjs',
 		'korio-android',
-		'korio-jtransc-example'
+		'korio-vertx',
+		'korio-jtransc-example',
+		'korio-ext-db-redis',
 )
+
+includeProj(":korio-ext-amazon-common", "korio-ext-amazon/korio-ext-amazon-common")
+includeProj(":korio-ext-amazon-s3", "korio-ext-amazon/korio-ext-amazon-s3")
+includeProj(":korio-ext-amazon-dynamodb", "korio-ext-amazon/korio-ext-amazon-dynamodb")
+
+includeProj(":korio-ext-db-redis", "korio-ext-db/korio-ext-db-redis")
