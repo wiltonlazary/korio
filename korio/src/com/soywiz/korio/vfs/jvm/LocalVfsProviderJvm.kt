@@ -4,9 +4,11 @@ package com.soywiz.korio.vfs.jvm
 
 import com.soywiz.korio.async.*
 import com.soywiz.korio.coroutine.korioSuspendCoroutine
+import com.soywiz.korio.coroutine.withCoroutineContext
 import com.soywiz.korio.stream.AsyncStream
 import com.soywiz.korio.stream.AsyncStreamBase
 import com.soywiz.korio.stream.toAsyncStream
+import com.soywiz.korio.util.OS
 import com.soywiz.korio.util.isAliveJre7
 import com.soywiz.korio.vfs.*
 import java.io.*
@@ -19,7 +21,7 @@ import java.util.concurrent.TimeUnit
 
 
 class LocalVfsProviderJvm : LocalVfsProvider() {
-	override fun invoke(): Vfs = object : Vfs() {
+	override fun invoke(): LocalVfs = object : LocalVfs() {
 		val that = this
 		override val absolutePath: String = ""
 
@@ -27,8 +29,13 @@ class LocalVfsProviderJvm : LocalVfsProvider() {
 		fun resolvePath(path: String) = Paths.get(resolve(path))
 		fun resolveFile(path: String) = File(resolve(path))
 
-		suspend override fun exec(path: String, cmdAndArgs: List<String>, handler: VfsProcessHandler): Int = executeInWorker {
-			val p = Runtime.getRuntime().exec(cmdAndArgs.toTypedArray(), arrayOf<String>(), resolveFile(path))
+		suspend override fun exec(path: String, cmdAndArgs: List<String>, env: Map<String, String>, handler: VfsProcessHandler): Int = executeInWorker {
+			val actualCmd = if (OS.isWindows) listOf("cmd", "/c") + cmdAndArgs else cmdAndArgs
+			val pb = ProcessBuilder(actualCmd)
+			pb.environment().putAll(mapOf())
+			pb.directory(resolveFile(path))
+
+			val p = pb.start()
 			var closing = false
 			while (true) {
 				val o = p.inputStream.readAvailableChunk(readRest = closing)
@@ -112,9 +119,9 @@ class LocalVfsProviderJvm : LocalVfsProvider() {
 			val fullpath = "$path/${file.name}"
 			if (file.exists()) {
 				createExistsStat(
-						fullpath,
-						isDirectory = file.isDirectory,
-						size = file.length()
+					fullpath,
+					isDirectory = file.isDirectory,
+					size = file.length()
 				)
 			} else {
 				createNonExistsStat(fullpath)
@@ -122,6 +129,7 @@ class LocalVfsProviderJvm : LocalVfsProvider() {
 		}
 
 		suspend override fun list(path: String): AsyncSequence<VfsFile> {
+			/*
 			val emitter = AsyncSequenceEmitter<VfsFile>()
 			val files = executeInWorker { Files.newDirectoryStream(resolvePath(path)) }
 			spawnAndForget {
@@ -137,10 +145,22 @@ class LocalVfsProviderJvm : LocalVfsProvider() {
 				}
 			}
 			return emitter.toSequence()
+			*/
+			return executeInWorker {
+				asyncGenerate(coroutineContext) {
+					for (file in File(path).listFiles() ?: arrayOf()) {
+						yield(that.file("$path/${file.name}"))
+					}
+				}
+			}
 		}
 
 		suspend override fun mkdir(path: String, attributes: List<Attribute>): Boolean = executeInWorker {
 			resolveFile(path).mkdir()
+		}
+
+		suspend override fun touch(path: String, time: Long, atime: Long) {
+			resolveFile(path).setLastModified(time)
 		}
 
 		suspend override fun delete(path: String): Boolean = executeInWorker {
@@ -159,14 +179,14 @@ class LocalVfsProviderJvm : LocalVfsProvider() {
 			})
 		}
 
-		suspend override fun watch(path: String, handler: (VfsFileEvent) -> Unit): Closeable {
+		suspend override fun watch(path: String, handler: (VfsFileEvent) -> Unit): Closeable = withCoroutineContext {
 			var running = true
 			val fs = FileSystems.getDefault()
 			val watcher = fs.newWatchService()
 
 			fs.getPath(path).register(watcher, ENTRY_CREATE, ENTRY_DELETE, ENTRY_MODIFY)
 
-			spawnAndForget {
+			spawnAndForget(this@withCoroutineContext) {
 				while (running) {
 					val key = executeInWorker {
 						var r: WatchKey?
@@ -202,7 +222,7 @@ class LocalVfsProviderJvm : LocalVfsProvider() {
 				}
 			}
 
-			return Closeable {
+			return@withCoroutineContext Closeable {
 				running = false
 				watcher.close()
 			}

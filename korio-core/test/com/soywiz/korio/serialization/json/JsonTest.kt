@@ -13,8 +13,8 @@ class JsonTest {
 	@Test
 	fun decode2() {
 		Assert.assertEquals(
-				listOf("a", 1, -1, 0.125, 0, 11, true, false, null, listOf<Any?>(), mapOf<String, Any?>()),
-				Json.decode("""["a", 1, -1, 0.125, 0, 11, true, false, null, [], {}]""")
+			listOf("a", 1, -1, 0.125, 0, 11, true, false, null, listOf<Any?>(), mapOf<String, Any?>()),
+			Json.decode("""["a", 1, -1, 0.125, 0, 11, true, false, null, [], {}]""")
 		)
 	}
 
@@ -77,12 +77,51 @@ class JsonTest {
 	}
 
 	@Test
+	fun decodeToPrim() {
+		//val resultStr = Json.encode(mapOf("items" to listOf(1, 2, 3, 4, 5)))
+		Assert.assertEquals(listOf(1, 2, 3, 4, 5), Json.decodeToType<List<Int>>("""[1, 2, 3, 4, 5]"""))
+		Assert.assertEquals(1, Json.decodeToType<Int>("1"))
+		Assert.assertEquals(true, Json.decodeToType<Boolean>("true"))
+		Assert.assertEquals("a", Json.decodeToType<String>("\"a\""))
+		Assert.assertEquals('a', Json.decodeToType<Char>("\"a\""))
+	}
+
+	@Test
+	fun decodeToPrimChar() {
+		Assert.assertEquals('a', Json.decodeToType<Char>("\"a\""))
+	}
+
+	@Test
 	fun decodeWithStaticMembers() {
 		Assert.assertEquals("""{"a":10}""", Json.encode(Demo2()))
 	}
 
+	enum class MyEnum { DEMO, HELLO, WORLD }
+	data class ClassWithEnum(val a: MyEnum = MyEnum.HELLO)
+
+	@Test
+	fun testEncodeEnum() {
+		Assert.assertEquals("""{"a":"HELLO"}""", Json.encode(ClassWithEnum()))
+	}
+
+	@Test
+	fun testDecodeEnum() {
+		Assert.assertEquals(ClassWithEnum(MyEnum.WORLD), Json.decodeToType<ClassWithEnum>("""{"a":"WORLD"}"""))
+	}
+
+	@Test
+	fun testDecodeMap() {
+		data class V(val a: Int, val b: Int)
+		data class Demo(val v: Map<String, V>)
+
+		Assert.assertEquals(Demo(mapOf("z" to V(1, 2))), Json.decodeToType<Demo>("""{"v":{"z":{"a":1,"b":2}}}"""))
+
+		Assert.assertEquals("""{"v":{"z1":{"a":1,"b":2},"z2":{"a":1,"b":2}}}""", Json.encode(Demo(mapOf("z1" to V(1, 2), "z2" to V(1, 2)))))
+	}
+
 	class Demo2 {
 		var a: Int = 10
+
 		companion object {
 			@JvmStatic var b: String = "test"
 		}

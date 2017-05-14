@@ -1,6 +1,7 @@
 package com.soywiz.korio.stream
 
 import com.soywiz.korio.util.*
+import org.omg.IOP.Encoding
 import java.io.*
 import java.nio.charset.Charset
 import java.util.*
@@ -26,6 +27,11 @@ interface SyncRAOutputStream {
 }
 
 open class SyncStreamBase : Closeable, SyncRAInputStream, SyncRAOutputStream, SyncLengthStream {
+	val smallTemp = ByteArray(16)
+	fun read(position: Long): Int {
+		val count = read(position, smallTemp, 0, 1)
+		return if (count >= 1) smallTemp[0].toInt() and 0xFF else -1
+	}
 	override fun read(position: Long, buffer: ByteArray, offset: Int, len: Int): Int = throw UnsupportedOperationException()
 	override fun write(position: Long, buffer: ByteArray, offset: Int, len: Int): Unit = throw UnsupportedOperationException()
 	override var length: Long
@@ -36,7 +42,14 @@ open class SyncStreamBase : Closeable, SyncRAInputStream, SyncRAOutputStream, Sy
 }
 
 
-class SyncStream(val base: SyncStreamBase, var position: Long = 0L) : Closeable, SyncInputStream, SyncOutputStream, SyncLengthStream {
+class SyncStream(val base: SyncStreamBase, var position: Long = 0L) : Extra by Extra.Mixin(), Closeable, SyncInputStream, SyncOutputStream, SyncLengthStream {
+	val smallTemp = ByteArray(16)
+
+	fun read(): Int {
+		val count = read(smallTemp, 0, 1)
+		return if (count < 0) -1 else smallTemp[0].toInt() and 0xFF
+	}
+
 	override fun read(buffer: ByteArray, offset: Int, len: Int): Int {
 		val read = base.read(position, buffer, offset, len)
 		position += read
@@ -139,8 +152,8 @@ fun FillSyncStream(fillByte: Int = 0, length: Long = Long.MAX_VALUE) = FillSyncS
 
 fun MemorySyncStream(data: ByteArray = ByteArray(0)) = MemorySyncStreamBase(ByteArrayBuffer(data)).toSyncStream()
 fun MemorySyncStream(data: ByteArrayBuffer) = MemorySyncStreamBase(data).toSyncStream()
-inline fun MemorySyncStreamToByteArray(callback: SyncStream.() -> Unit): ByteArray {
-	val buffer = ByteArrayBuffer()
+inline fun MemorySyncStreamToByteArray(initialCapacity: Int = 4096, callback: SyncStream.() -> Unit): ByteArray {
+	val buffer = ByteArrayBuffer(initialCapacity)
 	val s = MemorySyncStream(buffer)
 	callback(s)
 	return buffer.toByteArray()
@@ -165,7 +178,9 @@ fun SyncStream.toByteArray(): ByteArray {
 	}
 }
 
-class MemorySyncStreamBase(var data: ByteArrayBuffer = ByteArrayBuffer()) : SyncStreamBase() {
+class MemorySyncStreamBase(var data: ByteArrayBuffer) : SyncStreamBase() {
+	constructor(initialCapacity: Int = 4096) : this(ByteArrayBuffer(initialCapacity))
+
 	override var length: Long
 		get() = data.size.toLong()
 		set(value) = run { data.size = value.toInt() }
@@ -216,10 +231,12 @@ fun SyncStream.readStream(length: Long): SyncStream = readSlice(length)
 
 fun SyncStream.readStringz(charset: Charset = Charsets.UTF_8): String {
 	val buf = ByteArrayOutputStream()
-	while (!eof) {
-		val b = readU8()
-		if (b == 0) break
-		buf.write(b.toInt())
+	val temp = BYTES_TEMP
+	while (true) {
+		val read = read(temp, 0, 1)
+		if (read <= 0) break
+		if (temp[0] == 0.toByte()) break
+		buf.write(temp[0].toInt())
 	}
 	return buf.toByteArray().toString(charset)
 }
@@ -263,6 +280,12 @@ fun SyncStream.writeBytes(data: ByteArray): Unit = write(data, 0, data.size)
 fun SyncStream.writeBytes(data: ByteArraySlice): Unit = write(data.data, data.position, data.length)
 
 val SyncStream.eof: Boolean get () = this.available <= 0L
+private fun SyncStream.readSmallTempExact(count: Int): ByteArray {
+	val t = this.smallTemp
+	readExact(t, 0, count)
+	return t
+}
+
 private fun SyncStream.readTempExact(count: Int): ByteArray {
 	val temp = BYTES_TEMP
 	return temp.apply { readExact(temp, 0, count) }
@@ -273,30 +296,35 @@ private fun SyncStream.readTemp(count: Int): ByteArray {
 	return temp.apply { read(temp, 0, count) }
 }
 
-fun SyncStream.readU8(): Int = readTempExact(1).readU8(0)
-fun SyncStream.readS8(): Int = readTempExact(1).readS8(0)
+fun SyncStream.fastReadU8(): Int = this.read() and 0xFF
+fun SyncStream.fastReadS8(): Int = this.read().toByte().toInt()
 
-fun SyncStream.readU16_le(): Int = readTempExact(2).readU16_le(0)
-fun SyncStream.readU24_le(): Int = readTempExact(3).readU24_le(0)
-fun SyncStream.readU32_le(): Long = readTempExact(4).readU32_le(0)
+fun SyncStream.readU8(): Int = readSmallTempExact(1).readU8(0)
+fun SyncStream.readS8(): Int = readSmallTempExact(1).readS8(0)
 
-fun SyncStream.readS16_le(): Int = readTempExact(2).readS16_le(0)
-fun SyncStream.readS32_le(): Int = readTempExact(4).readS32_le(0)
-fun SyncStream.readS64_le(): Long = readTempExact(8).readS64_le(0)
+fun SyncStream.readU16_le(): Int = readSmallTempExact(2).readU16_le(0)
+fun SyncStream.readU24_le(): Int = readSmallTempExact(3).readU24_le(0)
+fun SyncStream.readU32_le(): Long = readSmallTempExact(4).readU32_le(0)
 
-fun SyncStream.readF32_le(): Float = readTempExact(4).readF32_le(0)
-fun SyncStream.readF64_le(): Double = readTempExact(8).readF64_le(0)
+fun SyncStream.readS16_le(): Int = readSmallTempExact(2).readS16_le(0)
+fun SyncStream.readS24_le(): Int = readSmallTempExact(3).readS24_le(0)
+fun SyncStream.readS32_le(): Int = readSmallTempExact(4).readS32_le(0)
+fun SyncStream.readS64_le(): Long = readSmallTempExact(8).readS64_le(0)
 
-fun SyncStream.readU16_be(): Int = readTempExact(2).readU16_be(0)
-fun SyncStream.readU24_be(): Int = readTempExact(3).readU24_be(0)
-fun SyncStream.readU32_be(): Long = readTempExact(4).readU32_be(0)
+fun SyncStream.readF32_le(): Float = readSmallTempExact(4).readF32_le(0)
+fun SyncStream.readF64_le(): Double = readSmallTempExact(8).readF64_le(0)
 
-fun SyncStream.readS16_be(): Int = readTempExact(2).readS16_be(0)
-fun SyncStream.readS32_be(): Int = readTempExact(4).readS32_be(0)
-fun SyncStream.readS64_be(): Long = readTempExact(8).readS64_be(0)
+fun SyncStream.readU16_be(): Int = readSmallTempExact(2).readU16_be(0)
+fun SyncStream.readU24_be(): Int = readSmallTempExact(3).readU24_be(0)
+fun SyncStream.readU32_be(): Long = readSmallTempExact(4).readU32_be(0)
 
-fun SyncStream.readF32_be(): Float = readTempExact(4).readF32_be(0)
-fun SyncStream.readF64_be(): Double = readTempExact(8).readF64_be(0)
+fun SyncStream.readS16_be(): Int = readSmallTempExact(2).readS16_be(0)
+fun SyncStream.readS24_be(): Int = readSmallTempExact(3).readS24_be(0)
+fun SyncStream.readS32_be(): Int = readSmallTempExact(4).readS32_be(0)
+fun SyncStream.readS64_be(): Long = readSmallTempExact(8).readS64_be(0)
+
+fun SyncStream.readF32_be(): Float = readSmallTempExact(4).readF32_be(0)
+fun SyncStream.readF64_be(): Double = readSmallTempExact(8).readF64_be(0)
 
 fun SyncStream.readAvailable(): ByteArray = readBytes(available.toInt())
 fun SyncStream.readAll(): ByteArray = readBytes(available.toInt())
@@ -357,6 +385,15 @@ fun SyncStream.copyTo(target: SyncStream): Unit {
 	}
 }
 
+fun InputStream.toSyncStream(): SyncInputStream {
+	val iss = this
+	return object : SyncInputStream {
+		override fun read(buffer: ByteArray, offset: Int, len: Int): Int {
+			return iss.read(buffer, offset, len)
+		}
+	}
+}
+
 fun SyncStream.toInputStream(): InputStream {
 	val ss = this
 	return object : InputStream() {
@@ -371,6 +408,11 @@ fun SyncStream.writeToAlign(alignment: Int, value: Int = 0) {
 	val data = ByteArray((nextPosition - position).toInt())
 	Arrays.fill(data, value.toByte())
 	writeBytes(data)
+}
+
+fun SyncStream.skip(count: Int): SyncStream {
+	position += count
+	return this
 }
 
 fun SyncStream.skipToAlign(alignment: Int) {
@@ -393,3 +435,67 @@ fun SyncStream.writeIntArray_be(array: IntArray) = writeBytes(ByteArray(array.si
 fun SyncStream.writeLongArray_be(array: LongArray) = writeBytes(ByteArray(array.size * 8).apply { writeArray_be(0, array) })
 fun SyncStream.writeFloatArray_be(array: FloatArray) = writeBytes(ByteArray(array.size * 4).apply { writeArray_be(0, array) })
 fun SyncStream.writeDoubleArray_be(array: DoubleArray) = writeBytes(ByteArray(array.size * 8).apply { writeArray_be(0, array) })
+
+// Variable Length
+
+fun SyncStream.readU_VL(): Int {
+	var result = readU8()
+	if ((result and 0x80) == 0) return result
+	result = (result and 0x7f) or (readU8() shl 7)
+	if ((result and 0x4000) == 0) return result
+	result = (result and 0x3fff) or (readU8() shl 14)
+	if ((result and 0x200000) == 0) return result
+	result = (result and 0x1fffff) or (readU8() shl 21)
+	if ((result and 0x10000000) == 0) return result
+	result = (result and 0xfffffff) or (readU8() shl 28)
+	return result
+}
+fun SyncStream.readS_VL(): Int {
+	val v = readU_VL()
+	val sign = ((v and 1) != 0)
+	val uvalue = v ushr 1
+	return if (sign) -uvalue - 1 else uvalue
+}
+
+fun SyncStream.writeU_VL(v: Int): Unit {
+	var value = v
+	while (true) {
+		val c = value and 0x7f
+		value = value ushr 7
+		if (value == 0) {
+			write8(c)
+			break
+		}
+		write8(c or 0x80)
+	}
+}
+fun SyncStream.writeS_VL(v: Int): Unit {
+	val sign = if (v < 0) 1 else 0
+	writeU_VL(sign or ((if (v < 0) -v - 1 else v) shl 1))
+}
+
+fun SyncStream.writeStringVL(str: String, charset: Charset = Charsets.UTF_8): Unit {
+	val bytes = str.toByteArray(charset)
+	writeU_VL(bytes.size)
+	writeBytes(bytes)
+}
+
+fun SyncStream.readStringVL(charset: Charset = Charsets.UTF_8): String {
+	val bytes = ByteArray(readU_VL())
+	readExact(bytes, 0, bytes.size)
+	return bytes.toString(charset)
+}
+
+fun InputStream.readExactTo(buffer: ByteArray, offset: Int = 0, length: Int = buffer.size - offset): Int {
+	val end = offset + length
+	var pos = offset
+	while (true) {
+		val read = this.read(buffer, pos, end - pos)
+		if (read <= 0) break
+		pos += read
+	}
+	return pos - offset
+}
+
+//fun InputStream.readBytesFast(expectedSize: Int, buffer: ByteArray): Int {
+//}

@@ -3,6 +3,7 @@
 package com.soywiz.korio.stream
 
 import com.soywiz.korio.async.executeInWorker
+import com.soywiz.korio.error.unsupported
 import com.soywiz.korio.util.*
 import com.soywiz.korio.vfs.VfsFile
 import com.soywiz.korio.vfs.VfsOpenMode
@@ -13,7 +14,16 @@ import java.io.InputStream
 import java.nio.charset.Charset
 import java.util.*
 
+//interface SmallTemp {
+//	val smallTemp: ByteArray
+//}
+
+//interface AsyncBaseStream : AsyncCloseable, SmallTemp {
 interface AsyncBaseStream : AsyncCloseable {
+}
+
+interface AsyncInputOpenable {
+	suspend fun openRead(): AsyncInputStream
 }
 
 interface AsyncInputStream : AsyncBaseStream {
@@ -96,7 +106,7 @@ open class AsyncStreamBase : AsyncCloseable, AsyncRAInputStream, AsyncRAOutputSt
 
 fun AsyncStreamBase.toAsyncStream(position: Long = 0L): AsyncStream = AsyncStream(this, position)
 
-class AsyncStream(val base: AsyncStreamBase, var position: Long = 0L) : AsyncInputStream, AsyncOutputStream, AsyncPositionLengthStream, AsyncCloseable {
+class AsyncStream(val base: AsyncStreamBase, var position: Long = 0L) : Extra by Extra.Mixin(), AsyncInputStream, AsyncOutputStream, AsyncPositionLengthStream, AsyncCloseable {
 	suspend override fun read(buffer: ByteArray, offset: Int, len: Int): Int {
 		val read = base.read(position, buffer, offset, len)
 		if (read >= 0) position += read
@@ -247,6 +257,7 @@ suspend fun AsyncInputStream.readStringz(charset: Charset = Charsets.UTF_8): Str
 	while (true) {
 		val read = read(temp, 0, 1)
 		if (read <= 0) break
+		if (temp[0] == 0.toByte()) break
 		buf.write(temp[0].toInt())
 	}
 	return buf.toByteArray().toString(charset)
@@ -277,38 +288,68 @@ suspend fun AsyncInputStream.readExact(buffer: ByteArray, offset: Int, len: Int)
 	}
 }
 
+suspend private fun AsyncInputStream.readSmallTempExact(len: Int): ByteArray {
+	val t = BYTES_TEMP
+	readExact(t, 0, len)
+	return t
+}
+
 suspend private fun AsyncInputStream.readTempExact(len: Int, temp: ByteArray = BYTES_TEMP): ByteArray = temp.apply { readExact(temp, 0, len) }
 
 suspend fun AsyncInputStream.read(data: ByteArray): Int = read(data, 0, data.size)
 suspend fun AsyncInputStream.read(data: UByteArray): Int = read(data.data, 0, data.size)
 
 suspend fun AsyncInputStream.readBytes(len: Int): ByteArray {
-	val ba = ByteArray(len)
-	return Arrays.copyOf(ba, read(ba, 0, len))
+	if (len > BYTES_TEMP_SIZE) {
+		if (this is AsyncPositionLengthStream) {
+			val alen = Math.min(len, this.getAvailable().toIntClamp())
+			val ba = ByteArray(alen)
+			val alen2 = read(ba, 0, alen)
+			return if (ba.size == alen2) ba else Arrays.copyOf(ba, alen2)
+		} else {
+			// @TODO: We can read chunks of data in preallocated byte arrays, then join them all.
+			// @TODO: That would prevent resizing issues with the trade-off of more allocations.
+			var pending = len
+			val temp = BYTES_TEMP
+			val bout = ByteArrayOutputStream()
+			while (pending > 0) {
+				val read = this.read(temp, 0, Math.min(temp.size, pending))
+				if (read <= 0) break
+				bout.write(temp, 0, read)
+				pending -= read
+			}
+			return bout.toByteArray()
+		}
+	} else {
+		val ba = ByteArray(len)
+		val alen = read(ba, 0, len)
+		return if (ba.size == alen) ba else Arrays.copyOf(ba, alen)
+	}
+
 }
 
 suspend fun AsyncInputStream.readBytesExact(len: Int): ByteArray = ByteArray(len).apply { readExact(this, 0, len) }
 
-suspend fun AsyncInputStream.readU8(): Int = readTempExact(1).readU8(0)
-suspend fun AsyncInputStream.readS8(): Int = readTempExact(1).readS8(0)
-suspend fun AsyncInputStream.readU16_le(): Int = readTempExact(2).readU16_le(0)
-suspend fun AsyncInputStream.readU24_le(): Int = readTempExact(3).readU24_le(0)
-suspend fun AsyncInputStream.readU32_le(): Long = readTempExact(4).readU32_le(0)
-suspend fun AsyncInputStream.readS16_le(): Int = readTempExact(2).readS16_le(0)
-suspend fun AsyncInputStream.readS24_le(): Int = readTempExact(3).readS24_le(0)
-suspend fun AsyncInputStream.readS32_le(): Int = readTempExact(4).readS32_le(0)
-suspend fun AsyncInputStream.readS64_le(): Long = readTempExact(8).readS64_le(0)
-suspend fun AsyncInputStream.readF32_le(): Float = readTempExact(4).readF32_le(0)
-suspend fun AsyncInputStream.readF64_le(): Double = readTempExact(8).readF64_le(0)
-suspend fun AsyncInputStream.readU16_be(): Int = readTempExact(2).readU16_be(0)
-suspend fun AsyncInputStream.readU24_be(): Int = readTempExact(3).readU24_be(0)
-suspend fun AsyncInputStream.readU32_be(): Long = readTempExact(4).readU32_be(0)
-suspend fun AsyncInputStream.readS16_be(): Int = readTempExact(2).readS16_be(0)
-suspend fun AsyncInputStream.readS24_be(): Int = readTempExact(3).readS24_be(0)
-suspend fun AsyncInputStream.readS32_be(): Int = readTempExact(4).readS32_be(0)
-suspend fun AsyncInputStream.readS64_be(): Long = readTempExact(8).readS64_be(0)
-suspend fun AsyncInputStream.readF32_be(): Float = readTempExact(4).readF32_be(0)
-suspend fun AsyncInputStream.readF64_be(): Double = readTempExact(8).readF64_be(0)
+suspend fun AsyncInputStream.readU8(): Int = readSmallTempExact(1).readU8(0)
+suspend fun AsyncInputStream.readS8(): Int = readSmallTempExact(1).readS8(0)
+suspend fun AsyncInputStream.readU16_le(): Int = readSmallTempExact(2).readU16_le(0)
+suspend fun AsyncInputStream.readU24_le(): Int = readSmallTempExact(3).readU24_le(0)
+suspend fun AsyncInputStream.readU32_le(): Long = readSmallTempExact(4).readU32_le(0)
+suspend fun AsyncInputStream.readS16_le(): Int = readSmallTempExact(2).readS16_le(0)
+suspend fun AsyncInputStream.readS24_le(): Int = readSmallTempExact(3).readS24_le(0)
+suspend fun AsyncInputStream.readS32_le(): Int = readSmallTempExact(4).readS32_le(0)
+suspend fun AsyncInputStream.readS64_le(): Long = readSmallTempExact(8).readS64_le(0)
+suspend fun AsyncInputStream.readF32_le(): Float = readSmallTempExact(4).readF32_le(0)
+suspend fun AsyncInputStream.readF64_le(): Double = readSmallTempExact(8).readF64_le(0)
+suspend fun AsyncInputStream.readU16_be(): Int = readSmallTempExact(2).readU16_be(0)
+suspend fun AsyncInputStream.readU24_be(): Int = readSmallTempExact(3).readU24_be(0)
+suspend fun AsyncInputStream.readU32_be(): Long = readSmallTempExact(4).readU32_be(0)
+suspend fun AsyncInputStream.readS16_be(): Int = readSmallTempExact(2).readS16_be(0)
+suspend fun AsyncInputStream.readS24_be(): Int = readSmallTempExact(3).readS24_be(0)
+suspend fun AsyncInputStream.readS32_be(): Int = readSmallTempExact(4).readS32_be(0)
+suspend fun AsyncInputStream.readS64_be(): Long = readSmallTempExact(8).readS64_be(0)
+suspend fun AsyncInputStream.readF32_be(): Float = readSmallTempExact(4).readF32_be(0)
+suspend fun AsyncInputStream.readF64_be(): Double = readSmallTempExact(8).readF64_be(0)
 suspend fun AsyncStream.hasLength(): Boolean = try {
 	getLength(); true
 } catch (t: Throwable) {
@@ -451,6 +492,11 @@ suspend fun AsyncStream.writeToAlign(alignment: Int, value: Int = 0) {
 	writeBytes(data)
 }
 
+suspend fun AsyncStream.skip(count: Int): AsyncStream {
+	position += count
+	return this
+}
+
 suspend fun AsyncStream.skipToAlign(alignment: Int) {
 	val nextPosition = getPosition().nextAlignedTo(alignment.toLong())
 	readBytes((nextPosition - getPosition()).toInt())
@@ -498,15 +544,28 @@ suspend fun AsyncInputStream.readLine(eol: Char = '\n', charset: Charset = Chars
 	return out.toByteArray().toString(charset)
 }
 
-fun InputStream.toAsync(): AsyncInputStream {
+fun InputStream.toAsync(length: Long? = null): AsyncInputStream {
 	val syncIS = this
-	return object : AsyncInputStream {
-		suspend override fun read(buffer: ByteArray, offset: Int, len: Int): Int = executeInWorker {
-			syncIS.read(buffer, offset, len)
+	if (length != null) {
+		return object : AsyncInputStream, AsyncLengthStream {
+			suspend override fun read(buffer: ByteArray, offset: Int, len: Int): Int = executeInWorker {
+				syncIS.read(buffer, offset, len)
+			}
+			override suspend fun close() = syncIS.close()
+			suspend override fun setLength(value: Long) {
+				unsupported("Can't set length")
+			}
+			suspend override fun getLength(): Long = length
 		}
+	} else {
+		return object : AsyncInputStream {
+			suspend override fun read(buffer: ByteArray, offset: Int, len: Int): Int = executeInWorker {
+				syncIS.read(buffer, offset, len)
+			}
 
-		override suspend fun close() {
-			syncIS.close()
+			override suspend fun close() {
+				syncIS.close()
+			}
 		}
 	}
 }

@@ -4,6 +4,7 @@ import com.soywiz.korio.async.Promise
 import com.soywiz.korio.async.async
 import com.soywiz.korio.async.invokeSuspend
 import com.soywiz.korio.coroutine.Continuation
+import com.soywiz.korio.coroutine.withCoroutineContext
 import com.soywiz.korio.error.InvalidOperationException
 import com.soywiz.korio.net.http.Http
 import com.soywiz.korio.net.http.httpError
@@ -19,6 +20,7 @@ annotation class Route(val method: HttpMethod, val path: String)
 
 annotation class Param(val name: String, val limit: Int = -1)
 annotation class Post(val name: String, val limit: Int = -1)
+annotation class Header(val name: String, val limit: Int = -1)
 
 suspend inline fun <reified T : Any> KorRouter.registerRouter() = this.registerRouter(T::class.java)
 
@@ -28,8 +30,9 @@ suspend fun KorRouter.registerInterceptor(interceptor: suspend (HttpServerReques
 
 private val MAX_BODY_SIZE = 16 * 1024
 
-suspend fun KorRouter.registerRouter(clazz: Class<*>) {
-	val router = this
+suspend fun KorRouter.registerRouter(clazz: Class<*>) = withCoroutineContext {
+	val coroutineContext = this@withCoroutineContext
+	val router = this@registerRouter
 
 	println("Registering route $clazz...")
 
@@ -56,7 +59,8 @@ suspend fun KorRouter.registerRouter(clazz: Class<*>) {
 				val res = rreq.response()
 
 				val req = rreq.request()
-				val contentType = req.headers().get("Content-Type")
+				val headers = req.headers()
+				val contentType = headers.get("Content-Type")
 
 				val bodyHandler = Promise.Deferred<Unit>()
 
@@ -64,6 +68,7 @@ suspend fun KorRouter.registerRouter(clazz: Class<*>) {
 				var totalRequestSize = 0L
 				var bodyOverflow = false
 				val bodyContent = Buffer.buffer()
+				val response = Http.Response()
 
 				req.handler {
 					totalRequestSize += it.length()
@@ -87,7 +92,7 @@ suspend fun KorRouter.registerRouter(clazz: Class<*>) {
 					}
 				}
 
-				async {
+				async(coroutineContext) {
 					try {
 						bodyHandler.promise.await()
 
@@ -100,17 +105,26 @@ suspend fun KorRouter.registerRouter(clazz: Class<*>) {
 							val (index, paramType) = indexedParamType
 							val get = annotations.filterIsInstance<Param>().firstOrNull()
 							val post = annotations.filterIsInstance<Post>().firstOrNull()
+							val header = annotations.filterIsInstance<Header>().firstOrNull()
 							if (get != null) {
 								args += Dynamic.dynamicCast(rreq.pathParam(get.name), paramType)
 							} else if (post != null) {
 								val result = postParams[post.name]?.firstOrNull()
 								mapArgs[post.name] = result ?: ""
 								args += Dynamic.dynamicCast(result, paramType)
+							} else if (header != null) {
+								args += Dynamic.dynamicCast(req.getHeader(header.name) ?: "", paramType)
+							} else if (Http.Auth::class.java.isAssignableFrom(paramType)) {
+								args += Http.Auth.parse(req.getHeader("authorization") ?: "")
+							} else if (Http.Headers::class.java.isAssignableFrom(paramType)) {
+								args += Http.Headers(headers.map { it.key to it.value }) as Any?
+							} else if (Http.Response::class.java.isAssignableFrom(paramType)) {
+								args += response
 							} else if (Continuation::class.java.isAssignableFrom(paramType)) {
 								//deferred = Promise.Deferred<Any>()
 								//args += deferred.toContinuation()
 							} else {
-								httpError(500, "Route $route expected @Get or @Post annotation for parameter $index in method ${method.name}")
+								httpError(500, "Route $route expected Http.Headers type, or @Get, @Post or @Header annotation for parameter $index in method ${method.name}")
 							}
 						}
 
@@ -121,6 +135,8 @@ suspend fun KorRouter.registerRouter(clazz: Class<*>) {
 						val result = method.invokeSuspend(instance, args)
 
 						val finalResult = if (result is Promise<*>) result.await() else result
+
+						for ((k, v) in response.headers) res.putHeader(k, v)
 
 						when (finalResult) {
 							is String -> res.end("$finalResult")
@@ -140,12 +156,14 @@ suspend fun KorRouter.registerRouter(clazz: Class<*>) {
 							System.err.println("+++ ${req.absoluteURI()} : $postParams")
 							res.statusCode = ft.statusCode
 							res.statusMessage = ft.statusText
+							for (header in ft.headers) res.putHeader(header.first, header.second)
+							res.end(ft.msg)
 						} else {
 							System.err.println("### ${req.absoluteURI()} : $postParams")
 							t.printStackTrace()
 							res.statusCode = 500
+							res.end("${ft.message}")
 						}
-						res.end("${ft.message}")
 					}
 				}
 			}

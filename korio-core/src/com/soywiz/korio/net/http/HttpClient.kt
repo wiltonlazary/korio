@@ -2,7 +2,9 @@ package com.soywiz.korio.net.http
 
 import com.soywiz.korio.async.AsyncThread
 import com.soywiz.korio.async.Promise
-import com.soywiz.korio.async.sleep
+import com.soywiz.korio.coroutine.withEventLoop
+import com.soywiz.korio.crypto.fromBase64
+import com.soywiz.korio.error.invalidOp
 import com.soywiz.korio.service.Services
 import com.soywiz.korio.stream.*
 import com.soywiz.korio.util.AsyncCloseable
@@ -13,7 +15,54 @@ import java.util.concurrent.atomic.AtomicLong
 interface Http {
 	enum class Method { OPTIONS, GET, HEAD, POST, PUT, DELETE, TRACE, CONNECT, PATCH, OTHER }
 
-	class HttpException(val statusCode: Int, val msg: String = "Error$statusCode", val statusText: String = HttpStatusMessage.CODES[statusCode] ?: "Error$statusCode") : IOException(msg)
+	class HttpException(
+		val statusCode: Int,
+		val msg: String = "Error$statusCode",
+		val statusText: String = HttpStatusMessage.CODES[statusCode] ?: "Error$statusCode",
+		val headers: Http.Headers = Http.Headers()
+	) : IOException(msg) {
+		companion object {
+			fun unauthorizedBasic(realm: String = "Realm", msg: String = "Unauthorized"): Nothing = throw Http.HttpException(401, msg = msg, headers = Http.Headers("WWW-Authenticate" to "Basic realm=\"$realm\""))
+			//fun unauthorizedDigest(realm: String = "My Domain", msg: String = "Unauthorized"): Nothing = throw Http.HttpException(401, msg = msg, headers = Http.Headers("WWW-Authenticate" to "Digest realm=\"$realm\""))
+		}
+	}
+
+	data class Auth(
+		val user: String,
+		val pass: String,
+		val digest: String
+	) {
+		companion object {
+			fun parse(auth: String): Auth {
+				val parts = auth.split(' ', limit = 2)
+				if (parts[0].equals("basic", ignoreCase = true)) {
+					val parts = parts[1].fromBase64().toString(Charsets.UTF_8).split(':', limit = 2)
+					return Auth(user = parts[0], pass = parts[1], digest = "")
+				} else if (parts[0].isEmpty()) {
+					return Auth(user = "", pass = "", digest = "")
+				} else {
+					invalidOp("Just supported basic auth")
+				}
+			}
+		}
+
+		fun validate(expectedUser: String, expectedPass: String, realm: String = "Realm"): Boolean {
+			if (this.user == expectedUser && this.pass == expectedPass) return true
+			return false
+		}
+
+		suspend fun checkBasic(realm: String = "Realm", check: suspend Auth.() -> Boolean) {
+			if (user.isEmpty() || !check(this)) Http.HttpException.unauthorizedBasic(realm = "Domain", msg = "Invalid auth")
+		}
+	}
+
+	class Response {
+		val headers = arrayListOf<Pair<String, String>>()
+
+		fun header(key: String, value: String) {
+			headers += key to value
+		}
+	}
 
 	data class Headers(val items: List<Pair<String, String>>) : Iterable<Pair<String, String>> {
 		constructor(vararg items: Pair<String, String>) : this(items.toList())
@@ -100,10 +149,10 @@ interface Http {
 
 open class HttpClient protected constructor() {
 	data class Response(
-			val status: Int,
-			val statusText: String,
-			val headers: Http.Headers,
-			val content: AsyncInputStream
+		val status: Int,
+		val statusText: String,
+		val headers: Http.Headers,
+		val content: AsyncInputStream
 	) {
 		val success = status < 400
 		suspend fun readAllBytes() = content.readAll()
@@ -119,10 +168,10 @@ open class HttpClient protected constructor() {
 	}
 
 	data class CompletedResponse<T>(
-			val status: Int,
-			val statusText: String,
-			val headers: Http.Headers,
-			val content: T
+		val status: Int,
+		val statusText: String,
+		val headers: Http.Headers,
+		val content: T
 	) {
 		val success = status < 400
 	}
@@ -131,27 +180,61 @@ open class HttpClient protected constructor() {
 		TODO()
 	}
 
-	suspend fun request(method: Http.Method, url: String, headers: Http.Headers = Http.Headers(), content: AsyncStream? = null, throwErrors: Boolean = false): Response {
+	data class RequestConfig(
+		val followRedirects: Boolean = true,
+		val throwErrors: Boolean = false,
+		val maxRedirects: Int = 10,
+		val referer: String? = null,
+		val simulateBrowser: Boolean = false
+	)
+
+	suspend fun request(method: Http.Method, url: String, headers: Http.Headers = Http.Headers(), content: AsyncStream? = null, config: RequestConfig = RequestConfig()): Response {
 		val contentLength = content?.getLength() ?: 0L
 		var actualHeaders = headers
+
 		if (content != null && !headers.any { it.first.equals("content-length", ignoreCase = true) }) {
 			actualHeaders = actualHeaders.withReplaceHeaders("content-length" to "$contentLength")
 		}
-		return requestInternal(method, url, actualHeaders, content).apply { if (throwErrors) checkErrors() }
+
+		if (config.simulateBrowser) {
+			if (actualHeaders["user-agent"] == null) {
+				actualHeaders = actualHeaders.withReplaceHeaders(
+					"Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+					"user-agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.81 Safari/537.36"
+				)
+			}
+		}
+
+		//println("$method: $url ($config)")
+		//for (header in actualHeaders) println(" ${header.first}: ${header.second}")
+
+		val response = requestInternal(method, url, actualHeaders, content).apply { if (config.throwErrors) checkErrors() }
+		if (config.followRedirects && config.maxRedirects >= 0) {
+			val redirectLocation = response.headers["location"]
+			if (redirectLocation != null) {
+				//for (header in response.headers) println(header)
+				//println("Method: $method")
+				//println("Location: $location")
+				return request(method, redirectLocation, headers.withReplaceHeaders(
+					"Referer" to url
+				), content, config.copy(maxRedirects = config.maxRedirects - 1))
+			}
+		}
+		return response
 	}
 
-	suspend fun requestAsString(method: Http.Method, url: String, headers: Http.Headers = Http.Headers(), content: AsyncStream? = null, throwErrors: Boolean = false): CompletedResponse<String> {
-		val res = request(method, url, headers, content, throwErrors = throwErrors)
+	suspend fun requestAsString(method: Http.Method, url: String, headers: Http.Headers = Http.Headers(), content: AsyncStream? = null, config: RequestConfig = RequestConfig()): CompletedResponse<String> {
+		val res = request(method, url, headers, content, config = config)
 		return res.toCompletedResponse(res.readAllString())
 	}
 
-	suspend fun requestAsBytes(method: Http.Method, url: String, headers: Http.Headers = Http.Headers(), content: AsyncStream? = null, throwErrors: Boolean = false): CompletedResponse<ByteArray> {
-		val res = request(method, url, headers, content, throwErrors = throwErrors)
+	suspend fun requestAsBytes(method: Http.Method, url: String, headers: Http.Headers = Http.Headers(), content: AsyncStream? = null, config: RequestConfig = RequestConfig()): CompletedResponse<ByteArray> {
+		val res = request(method, url, headers, content, config = config)
 		return res.toCompletedResponse(res.readAllBytes())
 	}
 
-	suspend fun readBytes(url: String): ByteArray = requestAsBytes(Http.Method.GET, url, throwErrors = true).content
-	suspend fun readString(url: String, charset: Charset = Charsets.UTF_8): String = requestAsString(Http.Method.GET, url, throwErrors = true).content
+	suspend fun readBytes(url: String, config: RequestConfig = RequestConfig()): ByteArray = requestAsBytes(Http.Method.GET, url, config = config.copy(throwErrors = true)).content
+	suspend fun readString(url: String, config: RequestConfig = RequestConfig()): String = requestAsString(Http.Method.GET, url, config = config.copy(throwErrors = true)).content
 
 	companion object {
 		operator fun invoke() = httpFactory.createClient()
@@ -162,9 +245,11 @@ open class DelayedHttpClient(val delayMs: Int, val parent: HttpClient) : HttpCli
 	private val queue = AsyncThread()
 
 	suspend override fun requestInternal(method: Http.Method, url: String, headers: Http.Headers, content: AsyncStream?): Response = queue {
-		println("Waiting $delayMs milliseconds for $url...")
-		sleep(delayMs)
-		parent.request(method, url, headers, content)
+		withEventLoop {
+			println("Waiting $delayMs milliseconds for $url...")
+			sleep(delayMs)
+			parent.request(method, url, headers, content)
+		}
 	}
 }
 
@@ -225,63 +310,63 @@ class LogHttpClient(val redirect: HttpClient? = null) : HttpClient() {
 
 object HttpStatusMessage {
 	val CODES = mapOf(
-			100 to "Continue",
-			101 to "Switching Protocols",
-			200 to "OK",
-			201 to "Created",
-			202 to "Accepted",
-			203 to "Non-Authoritative Information",
-			204 to "No Content",
-			205 to "Reset Content",
-			206 to "Partial Content",
-			300 to "Multiple Choices",
-			301 to "Moved Permanently",
-			302 to "Found",
-			303 to "See Other",
-			304 to "Not Modified",
-			305 to "Use Proxy",
-			307 to "Temporary Redirect",
-			400 to "Bad Request",
-			401 to "Unauthorized",
-			402 to "Payment Required",
-			403 to "Forbidden",
-			404 to "Not Found",
-			405 to "Method Not Allowed",
-			406 to "Not Acceptable",
-			407 to "Proxy Authentication Required",
-			408 to "Request Timeout",
-			409 to "Conflict",
-			410 to "Gone",
-			411 to "Length Required",
-			412 to "Precondition Failed",
-			413 to "Request Entity Too Large",
-			414 to "Request-URI Too Long",
-			415 to "Unsupported Media Type",
-			416 to "Requested Range Not Satisfiable",
-			417 to "Expectation Failed",
-			418 to "I'm a teapot",
-			422 to "Unprocessable Entity (WebDAV - RFC 4918)",
-			423 to "Locked (WebDAV - RFC 4918)",
-			424 to "Failed Dependency (WebDAV) (RFC 4918)",
-			425 to "Unassigned",
-			426 to "Upgrade Required (RFC 7231)",
-			428 to "Precondition Required",
-			429 to "Too Many Requests",
-			431 to "Request Header Fileds Too Large)",
-			449 to "Error449",
-			451 to "Unavailable for Legal Reasons",
-			500 to "Internal Server Error",
-			501 to "Not Implemented",
-			502 to "Bad Gateway",
-			503 to "Service Unavailable",
-			504 to "Gateway Timeout",
-			505 to "HTTP Version Not Supported",
-			506 to "Variant Also Negotiates (RFC 2295)",
-			507 to "Insufficient Storage (WebDAV - RFC 4918)",
-			508 to "Loop Detected (WebDAV)",
-			509 to "Bandwidth Limit Exceeded",
-			510 to "Not Extended (RFC 2774)",
-			511 to "Network Authentication Required"
+		100 to "Continue",
+		101 to "Switching Protocols",
+		200 to "OK",
+		201 to "Created",
+		202 to "Accepted",
+		203 to "Non-Authoritative Information",
+		204 to "No Content",
+		205 to "Reset Content",
+		206 to "Partial Content",
+		300 to "Multiple Choices",
+		301 to "Moved Permanently",
+		302 to "Found",
+		303 to "See Other",
+		304 to "Not Modified",
+		305 to "Use Proxy",
+		307 to "Temporary Redirect",
+		400 to "Bad Request",
+		401 to "Unauthorized",
+		402 to "Payment Required",
+		403 to "Forbidden",
+		404 to "Not Found",
+		405 to "Method Not Allowed",
+		406 to "Not Acceptable",
+		407 to "Proxy Authentication Required",
+		408 to "Request Timeout",
+		409 to "Conflict",
+		410 to "Gone",
+		411 to "Length Required",
+		412 to "Precondition Failed",
+		413 to "Request Entity Too Large",
+		414 to "Request-URI Too Long",
+		415 to "Unsupported Media Type",
+		416 to "Requested Range Not Satisfiable",
+		417 to "Expectation Failed",
+		418 to "I'm a teapot",
+		422 to "Unprocessable Entity (WebDAV - RFC 4918)",
+		423 to "Locked (WebDAV - RFC 4918)",
+		424 to "Failed Dependency (WebDAV) (RFC 4918)",
+		425 to "Unassigned",
+		426 to "Upgrade Required (RFC 7231)",
+		428 to "Precondition Required",
+		429 to "Too Many Requests",
+		431 to "Request Header Fileds Too Large)",
+		449 to "Error449",
+		451 to "Unavailable for Legal Reasons",
+		500 to "Internal Server Error",
+		501 to "Not Implemented",
+		502 to "Bad Gateway",
+		503 to "Service Unavailable",
+		504 to "Gateway Timeout",
+		505 to "HTTP Version Not Supported",
+		506 to "Variant Also Negotiates (RFC 2295)",
+		507 to "Insufficient Storage (WebDAV - RFC 4918)",
+		508 to "Loop Detected (WebDAV)",
+		509 to "Bandwidth Limit Exceeded",
+		510 to "Not Extended (RFC 2774)",
+		511 to "Network Authentication Required"
 	)
 
 }

@@ -12,6 +12,7 @@ import java.lang.reflect.Modifier
 import java.lang.reflect.ParameterizedType
 import java.lang.reflect.Type
 import java.util.*
+import kotlin.collections.LinkedHashMap
 
 object Dynamic {
 	@Suppress("UNCHECKED_CAST")
@@ -74,6 +75,42 @@ object Dynamic {
 		}
 	}
 
+	fun <T : Any> getFieldSync(instance: T?, key: String): Any? {
+		return if (instance == null) {
+			null
+		} else {
+			// use getAny instead
+			//if (instance is Map<*, *>) return instance[key]
+			//if (instance is List<*>) {
+			//	val index = key.toIntOrNull()
+			//	if (index != null) return instance[index]
+			//}
+			val clazz = instance::class.java
+			val dmethods = clazz.declaredMethods
+			val getterName = "get${key.capitalize()}"
+			val getter = ignoreErrors { dmethods.firstOrNull { it.name == getterName } }
+			val method = ignoreErrors { dmethods.firstOrNull { it.name == key } }
+
+			if (getter != null) {
+				getter.isAccessible = true
+				getter.invoke(instance)
+			} else if (method != null) {
+				method.isAccessible = true
+				//method.invoke(instance)
+				method.invoke(instance)
+			} else {
+				val field = clazz.declaredFields.find { it.name == key }
+				if (field != null && !Modifier.isStatic(field.modifiers)) {
+					//val field = instance.javaClass.getField(name)
+					field.isAccessible = true
+					field.get(instance)
+				} else {
+					null
+				}
+			}
+		}
+	}
+
 	fun toNumber(it: Any?): Double {
 		return when (it) {
 			null -> 0.0
@@ -92,6 +129,15 @@ object Dynamic {
 			is Boolean -> it
 			is String -> it.isNotEmpty() && it != "0" && it != "false"
 			else -> toInt(it) != 0
+		}
+	}
+
+	fun toBoolOrNull(it: Any?): Boolean? {
+		return when (it) {
+			null -> null
+			is Boolean -> it
+			is String -> it.isNotEmpty() && it != "0" && it != "false"
+			else -> null
 		}
 	}
 
@@ -136,7 +182,16 @@ object Dynamic {
 		else -> getField(instance, key.toString())
 	}
 
+	fun accessAnySync(instance: Any?, key: Any?): Any? = when (instance) {
+		null -> null
+		is Map<*, *> -> instance[key]
+		is Iterable<*> -> instance.toList()[toInt(key)]
+		else -> getFieldSync(instance, key.toString())
+	}
+
 	suspend fun getAny(instance: Any?, key: Any?): Any? = accessAny(instance, key)
+
+	fun getAnySync(instance: Any?, key: Any?): Any? = accessAnySync(instance, key)
 
 	@Suppress("UNCHECKED_CAST")
 	fun setAny(instance: Any?, key: Any?, value: Any?): Any? {
@@ -147,6 +202,9 @@ object Dynamic {
 			else -> setField(instance, key.toString(), value)
 		}
 	}
+
+	@Suppress("UNCHECKED_CAST")
+	fun setAnySync(instance: Any?, key: Any?, value: Any?): Any? = setAny(instance, key, value)
 
 	fun hasField(javaClass: Class<Any>, name: String): Boolean {
 		return javaClass.declaredFields.any { it.name == name }
@@ -177,7 +235,7 @@ object Dynamic {
 			when (target) {
 				java.lang.Boolean.TYPE -> return (str == "true" || str == "1") as T
 				Byte.TYPE -> return str.parseInt().toByte() as T
-				Character.TYPE -> return str.parseInt().toChar() as T
+				Character.TYPE -> return if (value is String && value.length >= 1) value[0] as T else str.parseInt().toChar() as T
 				java.lang.Short.TYPE -> return str.parseInt().toShort() as T
 				java.lang.Long.TYPE -> return str.parseLong() as T
 				Float.TYPE -> return str.toFloat() as T
@@ -188,7 +246,7 @@ object Dynamic {
 		}
 		if (target.isAssignableFrom(java.lang.Boolean::class.java)) return (str == "true" || str == "1") as T
 		if (target.isAssignableFrom(java.lang.Byte::class.java)) return str.parseInt().toByte() as T
-		if (target.isAssignableFrom(Character::class.java)) return str.parseInt().toChar() as T
+		if (target.isAssignableFrom(Character::class.java)) return if (value is String && value.length >= 1) value[0] as T else str.parseInt().toChar() as T
 		if (target.isAssignableFrom(java.lang.Short::class.java)) return str.parseShort() as T
 		if (target.isAssignableFrom(Integer::class.java)) return str.parseInt() as T
 		if (target.isAssignableFrom(java.lang.Long::class.java)) return str.parseLong() as T
@@ -199,16 +257,32 @@ object Dynamic {
 		if (value is Map<*, *>) {
 			val map = value as Map<Any?, *>
 			val resultClass = target as Class<Any>
-			val result = createEmptyClass(resultClass)
-			for (field in result::class.java.declaredFields) {
-				if (Modifier.isStatic(field.modifiers)) continue
-				if (field.name in map) {
-					val v = map[field.name]
-					field.isAccessible = true
-					field.set(result, dynamicCast(v, field.type, field.genericType))
+			if (resultClass.isAssignableFrom(Map::class.java)) {
+				if (genericType is ParameterizedType) {
+					val result = LinkedHashMap<Any?, Any?>()
+					val keyType = genericType.actualTypeArguments[0] as? Class<*>?
+					val valueType = genericType.actualTypeArguments[1] as? Class<*>?
+					for (entry in value.entries) {
+						val keyCasted = if (keyType != null) dynamicCast(entry.key, keyType) else entry.key
+						val valueCasted = if (valueType != null) dynamicCast(entry.value, valueType) else entry.value
+						result[keyCasted] = valueCasted
+					}
+					return result as T
+				} else {
+					return map as T
 				}
+			} else {
+				val result = createEmptyClass(resultClass)
+				for (field in result::class.java.declaredFields) {
+					if (Modifier.isStatic(field.modifiers)) continue
+					if (field.name in map) {
+						val v = map[field.name]
+						field.isAccessible = true
+						field.set(result, dynamicCast(v, field.type, field.genericType))
+					}
+				}
+				return result as T
 			}
-			return result as T
 		}
 		if (value is Iterable<*>) {
 			if (genericType is ParameterizedType) {

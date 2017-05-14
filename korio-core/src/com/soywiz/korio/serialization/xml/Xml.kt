@@ -1,17 +1,21 @@
 package com.soywiz.korio.serialization.xml
 
+import com.soywiz.korio.util.Indenter
+import com.soywiz.korio.util.toTreeMap
 import org.intellij.lang.annotations.Language
 import java.util.*
 
 data class Xml(val type: Type, val name: String, val attributes: Map<String, String>, val allChildren: List<Xml>, val content: String) {
+	val attributesLC = attributes.toTreeMap(String.CASE_INSENSITIVE_ORDER)
 	val nameLC: String = name.toLowerCase().trim()
 	val descendants: Iterable<Xml> get() = allChildren.flatMap { it.allChildren + it }
-	val allChildrenNoComments get() = allChildren.filter { it.type != Type.COMMENT }
-	val allNodeChildren get() = allChildren.filter { it.type == Type.NODE }
+	val allChildrenNoComments get() = allChildren.filter { !it.isComment }
+	val allNodeChildren get() = allChildren.filter { it.isNode }
 
 	companion object {
 		fun Tag(tagName: String, attributes: Map<String, Any?>, children: List<Xml>): Xml {
-			return Xml(Xml.Type.NODE, tagName, attributes.filter { it.value != null }.map { it.key to it.value.toString() }.toMap(), children, "")
+			val att = attributes.filter { it.value != null }.map { it.key to it.value.toString() }.toMap()
+			return Xml(Xml.Type.NODE, tagName, att, children, "")
 		}
 
 		fun Text(text: String): Xml {
@@ -64,26 +68,39 @@ data class Xml(val type: Type, val name: String, val attributes: Map<String, Str
 		}
 	}
 
-	fun hasAttribute(key: String): Boolean = this.attributes.containsKey(key)
-	fun attribute(name: String): String? = this.attributes[name]
-	fun getString(name: String): String? = this.attributes[name]?.toString()
-	fun getInt(name: String): Int? = this.attributes[name]?.toInt()
-	fun getDouble(name: String): Double? = this.attributes[name]?.toDouble()
-
 	val text: String get() = when (type) {
 		Type.NODE -> allChildren.map { it.text }.joinToString("")
 		Type.TEXT -> content
 		Type.COMMENT -> ""
 	}
 
+	fun toOuterXmlIndented(indenter: Indenter = Indenter()): Indenter = indenter.apply {
+		when (type) {
+			Type.NODE -> {
+				if (allChildren.isEmpty()) {
+					line("<$name$attributesStr/>")
+				} else {
+					line("<$name$attributesStr>")
+					indent {
+						for (child in allChildren) child.toOuterXmlIndented(indenter)
+					}
+					line("</$name>")
+				}
+			}
+			Type.TEXT -> line(content)
+			Type.COMMENT -> line("<!--$content-->")
+		}
+	}
+
+	val attributesStr: String get() = attributes.toList().map { " ${it.first}=\"${it.second}\"" }.joinToString("")
+
 	val outerXml: String get() = when (type) {
 		Type.NODE -> {
-			val attrs = attributes.toList().map { " ${it.first}=\"${it.second}\"" }.joinToString("")
 			if (allChildren.isEmpty()) {
-				"<$name$attrs/>"
+				"<$name$attributesStr/>"
 			} else {
-				val children = this.allChildren.map { it.outerXml }.joinToString("")
-				"<$name$attrs>$children</$name>"
+				val children = this.allChildren.map(Xml::outerXml).joinToString("")
+				"<$name$attributesStr>$children</$name>"
 			}
 		}
 		Type.TEXT -> content
@@ -91,21 +108,44 @@ data class Xml(val type: Type, val name: String, val attributes: Map<String, Str
 	}
 
 	val innerXml: String get() = when (type) {
-		Type.NODE -> this.allChildren.map { it.outerXml }.joinToString("")
+		Type.NODE -> this.allChildren.map(Xml::outerXml).joinToString("")
 		Type.TEXT -> content
 		Type.COMMENT -> "<!--$content-->"
 	}
 
 	operator fun get(name: String): Iterable<Xml> = children(name)
-	fun children(name: String): Iterable<Xml> = allChildren.filter { it.name == name }
+
+	fun children(name: String): Iterable<Xml> = allChildren.filter { it.name.equals(name, ignoreCase = true) }
 	fun child(name: String): Xml? = children(name).firstOrNull()
 	fun childText(name: String): String? = child(name)?.text
 
-	fun double(name: String, defaultValue: Double = 0.0): Double = this.attributes[name]?.toDoubleOrNull() ?: defaultValue
-	fun int(name: String, defaultValue: Int = 0): Int = this.attributes[name]?.toInt() ?: defaultValue
-	fun str(name: String, defaultValue: String = ""): String = this.attributes[name] ?: defaultValue
+	fun hasAttribute(key: String): Boolean = this.attributesLC.containsKey(key)
+	fun attribute(name: String): String? = this.attributesLC[name]
 
-	override fun toString(): String = innerXml
+	fun getString(name: String): String? = this.attributesLC[name]
+	fun getInt(name: String): Int? = this.attributesLC[name]?.toInt()
+	fun getLong(name: String): Long? = this.attributesLC[name]?.toLong()
+	fun getDouble(name: String): Double? = this.attributesLC[name]?.toDouble()
+	fun getFloat(name: String): Float? = this.attributesLC[name]?.toFloat()
+
+	fun double(name: String, defaultValue: Double = 0.0): Double = this.attributesLC[name]?.toDoubleOrNull() ?: defaultValue
+	fun float(name: String, defaultValue: Float = 0f): Float = this.attributesLC[name]?.toFloatOrNull() ?: defaultValue
+	fun int(name: String, defaultValue: Int = 0): Int = this.attributesLC[name]?.toIntOrNull() ?: defaultValue
+	fun long(name: String, defaultValue: Long = 0): Long = this.attributesLC[name]?.toLongOrNull() ?: defaultValue
+	fun str(name: String, defaultValue: String = ""): String = this.attributesLC[name] ?: defaultValue
+
+	fun doubleNull(name: String): Double? = this.attributesLC[name]?.toDoubleOrNull()
+	fun floatNull(name: String): Float? = this.attributesLC[name]?.toFloatOrNull()
+	fun intNull(name: String): Int? = this.attributesLC[name]?.toIntOrNull()
+	fun longNull(name: String): Long? = this.attributesLC[name]?.toLongOrNull()
+	fun strNull(name: String): String? = this.attributesLC[name]
+
+	//override fun toString(): String = innerXml
+	override fun toString(): String = outerXml
 
 	enum class Type { NODE, TEXT, COMMENT }
 }
+
+val Xml.isText get() = this.type == Xml.Type.TEXT
+val Xml.isComment get() = this.type == Xml.Type.COMMENT
+val Xml.isNode get() = this.type == Xml.Type.NODE

@@ -3,16 +3,17 @@ package com.soywiz.korio.async
 import com.soywiz.korio.coroutine.Continuation
 import com.soywiz.korio.coroutine.CoroutineContext
 import com.soywiz.korio.coroutine.korioSuspendCoroutine
+import com.soywiz.korio.util.Cancellable
 import java.util.*
 import java.util.concurrent.CancellationException
 
-class Promise<T : Any?> {
+class Promise<T : Any?> : Cancellable {
 	class Deferred<T : Any?> {
 		val promise = Promise<T>()
 		val onCancel = promise.onCancel
 		fun resolve(value: T): Unit = run { promise.complete(value, null) }
 		fun reject(error: Throwable): Unit = run { promise.complete(null, error) }
-		fun toContinuation(ctx: CoroutineContext = CoroutineCancelContext()): CancellableContinuation<T> {
+		fun toContinuation(ctx: CoroutineContext): CancellableContinuation<T> {
 			val deferred = this
 			val cc = CancellableContinuation(object : Continuation<T> {
 				override val context: CoroutineContext = ctx
@@ -52,12 +53,12 @@ class Promise<T : Any?> {
 		if (error != null) {
 			while (true) {
 				val handler = synchronized(rejectedHandlers) { if (rejectedHandlers.isNotEmpty()) rejectedHandlers.removeFirst() else null } ?: break
-				EventLoop.queue { handler(error ?: RuntimeException()) }
+				handler(error ?: RuntimeException())
 			}
 		} else {
 			while (true) {
 				val handler = synchronized(resolvedHandlers) { if (resolvedHandlers.isNotEmpty()) resolvedHandlers.removeFirst() else null } ?: break
-				EventLoop.queue { handler(value as T) }
+				handler(value as T)
 			}
 		}
 	}
@@ -85,8 +86,8 @@ class Promise<T : Any?> {
 
 	fun always(resolved: () -> Unit) {
 		then(
-				resolved = { resolved() },
-				rejected = { resolved() }
+			resolved = { resolved() },
+			rejected = { resolved() }
 		)
 	}
 
@@ -103,10 +104,10 @@ class Promise<T : Any?> {
 		)
 	}
 
-	private val onCancel = Signal<Unit>()
+	private val onCancel = Signal<Throwable>()
 
-	fun cancel() {
-		onCancel()
+	override fun cancel(e: Throwable) {
+		onCancel(e)
 		complete(null, CancellationException())
 	}
 

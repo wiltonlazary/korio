@@ -2,6 +2,7 @@ package com.soywiz.korio.async
 
 import com.soywiz.korio.expectException
 import org.junit.Assert
+import org.junit.Ignore
 import org.junit.Test
 import java.util.concurrent.CancellationException
 
@@ -21,7 +22,7 @@ class PromiseTest {
 	@Test
 	fun name() = syncTest {
 		var out = ""
-		val p = spawn {
+		val p = spawn(coroutineContext) {
 			try {
 				sleep(100)
 				10
@@ -43,5 +44,39 @@ class PromiseTest {
 			"java.util.concurrent.CancellationException",
 			out
 		)
+	}
+
+	@Test
+	@Ignore
+	fun cancel1() = syncTest {
+		var out = ""
+		val prom = go {
+			out += "a"
+			sleep(1000)
+			out += "b"
+			go {
+				sleep(1000)
+				out += "c"
+				sleep(1000)
+				out += "d"
+			}.await()
+		}
+		Assert.assertEquals("a", out)
+		this@syncTest.step(1200)
+		Assert.assertEquals("ab", out)
+		this@syncTest.step(100)
+		Assert.assertEquals("ab", out)
+		prom.cancel()
+		this@syncTest.step(1200)
+		Assert.assertEquals("ab", out)
+	}
+
+	@Test
+	@Ignore
+	fun jvmUnsafeAwait() = syncTest {
+		Assert.assertEquals(10, async(coroutineContext) {
+			sleep(20)
+			10
+		}.jvmSyncAwait())
 	}
 }

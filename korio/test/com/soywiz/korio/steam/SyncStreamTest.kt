@@ -1,6 +1,5 @@
 package com.soywiz.korio.steam
 
-import com.soywiz.korio.async.sync
 import com.soywiz.korio.async.syncTest
 import com.soywiz.korio.stream.*
 import com.soywiz.korio.util.ByteArrayBuffer
@@ -24,7 +23,7 @@ class SyncStreamTest {
 		Assert.assertEquals(4L, out.length)
 		Assert.assertEquals(0x0102, out.readU16_be())
 		Assert.assertEquals(0x0304, out.readU16_le())
-		Assert.assertEquals(14, buffer.data.size)
+		Assert.assertEquals(4096, buffer.data.size)
 		Assert.assertEquals(4, buffer.toByteArray().size)
 		Assert.assertEquals(4, buffer.toByteArraySlice().length)
 	}
@@ -52,5 +51,25 @@ class SyncStreamTest {
 		out.write16_be(0x1234)
 		val bb = out.toByteArray()
 		Assert.assertArrayEquals(byteArrayOf(0x12, 0x34), bb)
+	}
+
+	@Test
+	fun testUVL() {
+		val values = listOf(0, 1, 33, 127, 128, 255, 256, 1985, 91234, 2131231, Int.MAX_VALUE)
+		val out = MemorySyncStream()
+		for (v in values) out.writeU_VL(v)
+		out.position = 0
+		val readValues = (0 until values.size).map { out.readU_VL() }
+		Assert.assertEquals(values, readValues)
+	}
+
+	@Test
+	fun testSVL() {
+		val values = listOf(Int.MIN_VALUE, -2131231, -91234, -1985, -256, -255, -128, -127, -33, -1, 0, 1, 33, 127, 128, 255, 256, 1985, 91234, 2131231, Int.MAX_VALUE)
+		val out = MemorySyncStream()
+		for (v in values) out.writeS_VL(v)
+		out.position = 0
+		val readValues = (0 until values.size).map { out.readS_VL() }
+		Assert.assertEquals(values, readValues)
 	}
 }

@@ -1,9 +1,9 @@
 package com.soywiz.korio.coroutine
 
-import com.soywiz.korio.async.suspendCoroutineEL
+import com.soywiz.korio.async.EventLoop
+import com.soywiz.korio.async.eventLoop
 import com.soywiz.korio.async.toEventLoop
 import kotlin.coroutines.experimental.Continuation
-import kotlin.coroutines.experimental.CoroutineContext
 import kotlin.coroutines.experimental.createCoroutine
 import kotlin.coroutines.experimental.startCoroutine
 
@@ -14,10 +14,25 @@ typealias RestrictsSuspension = kotlin.coroutines.experimental.RestrictsSuspensi
 typealias Continuation<T> = kotlin.coroutines.experimental.Continuation<T>
 typealias CoroutineContext = kotlin.coroutines.experimental.CoroutineContext
 typealias CoroutineContextKey<T> = kotlin.coroutines.experimental.CoroutineContext.Key<T>
-typealias EmptyCoroutineContext = kotlin.coroutines.experimental.EmptyCoroutineContext
+//typealias EmptyCoroutineContext = kotlin.coroutines.experimental.EmptyCoroutineContext
 typealias AbstractCoroutineContextElement = kotlin.coroutines.experimental.AbstractCoroutineContextElement
 
 //inline suspend fun <T> korioSuspendCoroutine(crossinline block: (Continuation<T>) -> Unit): T = kotlin.coroutines.experimental.suspendCoroutine(block)
+
+
+//suspend val coroutineContext: CoroutineContext = korioSuspendCoroutine<CoroutineContext> { c -> c.resume(c.context) }
+
+suspend fun getCoroutineContext(): CoroutineContext = korioSuspendCoroutine<CoroutineContext> { c ->
+	c.resume(c.context)
+}
+
+suspend fun <T> withCoroutineContext(callback: suspend CoroutineContext.() -> T) = korioSuspendCoroutine<T> { c ->
+	callback.startCoroutine(c.context, c)
+}
+
+suspend fun <T> withEventLoop(callback: suspend EventLoop.() -> T) = korioSuspendCoroutine<T> { c ->
+	callback.startCoroutine(c.context.eventLoop, c)
+}
 
 inline suspend fun <T> korioSuspendCoroutine(crossinline block: (Continuation<T>) -> Unit): T = _korioSuspendCoroutine { c ->
 	block(c.toEventLoop())
@@ -25,9 +40,9 @@ inline suspend fun <T> korioSuspendCoroutine(crossinline block: (Continuation<T>
 
 inline suspend fun <T> _korioSuspendCoroutine(crossinline block: (Continuation<T>) -> Unit): T {
 	return kotlin.coroutines.experimental.intrinsics.suspendCoroutineOrReturn { c: Continuation<T> ->
-		val safe = UnsafeContinuation(c)
-		block(safe)
-		safe.getResult()
+		val unsafe = UnsafeContinuation(c)
+		block(unsafe)
+		unsafe.getResult()
 	}
 }
 

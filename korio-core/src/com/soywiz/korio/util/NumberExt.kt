@@ -40,6 +40,12 @@ fun Int.insertScaled(value: Int, offset: Int, count: Int, scale: Int): Int {
 
 fun Int.insertScaledFF(value: Int, offset: Int, count: Int): Int = if (count == 0) this else this.insertScaled(value, offset, count, 0xFF)
 
+fun Int.nextAlignedTo(align: Int) = if (this % align == 0) {
+	this
+} else {
+	(((this / align) + 1) * align)
+}
+
 fun Long.nextAlignedTo(align: Long) = if (this % align == 0L) {
 	this
 } else {
@@ -71,6 +77,9 @@ fun Int.toUnsigned() = this.toLong() and 0xFFFFFFFFL
 fun Int.signExtend(bits: Int) = (this shl (32 - bits)) shr (32 - bits)
 fun Long.signExtend(bits: Int) = (this shl (64 - bits)) shr (64 - bits)
 
+val Float.niceStr: String get() = if (this.toLong().toFloat() == this) "${this.toLong()}" else "$this"
+val Double.niceStr: String get() = if (this.toLong().toDouble() == this) "${this.toLong()}" else "$this"
+
 infix fun Int.umod(other: Int): Int {
 	val remainder = this % other
 	return when {
@@ -84,7 +93,16 @@ fun Double.convertRange(srcMin: Double, srcMax: Double, dstMin: Double, dstMax: 
 	return (dstMin + (dstMax - dstMin) * ratio)
 }
 
+fun Double.convertRangeClamped(srcMin: Double, srcMax: Double, dstMin: Double, dstMax: Double): Double = convertRange(srcMin, srcMax, dstMin, dstMax).clamp(dstMin, dstMax)
+
 fun Long.convertRange(srcMin: Long, srcMax: Long, dstMin: Long, dstMax: Long): Long {
 	val ratio = (this - srcMin).toDouble() / (srcMax - srcMin).toDouble()
 	return (dstMin + (dstMax - dstMin) * ratio).toLong()
 }
+
+fun Double.toIntCeil() = Math.ceil(this).toInt()
+fun Double.toIntFloor() = Math.floor(this).toInt()
+fun Double.toIntRound() = Math.round(this).toInt()
+
+val Int.isOdd get() = (this % 2) == 1
+val Int.isEven get() = (this % 2) == 0

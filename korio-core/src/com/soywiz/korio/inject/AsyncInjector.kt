@@ -2,6 +2,7 @@ package com.soywiz.korio.inject
 
 import com.jtransc.annotation.JTranscKeep
 import com.soywiz.korio.error.invalidOp
+import com.soywiz.korio.util.Extra
 import com.soywiz.korio.util.allDeclaredFields
 import java.lang.reflect.Modifier
 import kotlin.reflect.KClass
@@ -21,18 +22,20 @@ annotation class Inject
 @Target(AnnotationTarget.VALUE_PARAMETER, AnnotationTarget.FIELD)
 annotation class Optional
 
-class AsyncInjector(val parent: AsyncInjector? = null, val level: Int = 0) {
+class AsyncInjector(val parent: AsyncInjector? = null, val level: Int = 0) : Extra by Extra.Mixin() {
 	private val instancesByClass = hashMapOf<Class<*>, Any?>()
 
 	fun child() = AsyncInjector(this, level + 1)
 
+	val rootForSingleton: AsyncInjector = parent?.rootForSingleton ?: this
+
 	suspend inline fun <reified T : Any> get() = get(T::class.java)
 
-	inline fun <reified T : Any> map(instance: T): AsyncInjector = map(T::class.java, instance)
-	fun <T : Any?> map(clazz: Class<T>, instance: T): AsyncInjector = this.apply { instancesByClass[clazz] = instance as Any }
+	inline fun <reified T : Any> mapTyped(instance: T): AsyncInjector = map(instance, T::class.java)
+	fun <T : Any> map(instance: T, clazz: Class<T> = instance.javaClass): AsyncInjector = this.apply { instancesByClass[clazz] = instance as Any }
 
 	init {
-		map<AsyncInjector>(this)
+		mapTyped<AsyncInjector>(this)
 	}
 
 	@Suppress("UNCHECKED_CAST")
@@ -49,17 +52,23 @@ class AsyncInjector(val parent: AsyncInjector? = null, val level: Int = 0) {
 			instancesByClass[clazz] = instance
 			instance
 		} else if (clazz.getAnnotation(Singleton::class.java) != null) {
+			val root = rootForSingleton
+			//val root = this
 			if (!has(clazz)) {
 				val instance = create(clazz, ctx) ?: return null
-				instancesByClass[clazz] = instance
+				root.instancesByClass[clazz] = instance
+				instance
+			} else {
+				(instancesByClass[clazz] ?: parent?.getOrNull(clazz, ctx)) as T?
 			}
-			(instancesByClass[clazz] ?: parent?.getOrNull(clazz, ctx)) as T?
+		} else if (clazz.getAnnotation(AsyncFactoryClass::class.java) != null) {
+			create(clazz, ctx)
 		} else {
 			(instancesByClass[clazz] ?: parent?.getOrNull(clazz, ctx)) as T?
 		}
 	}
 
-	suspend fun has(clazz: Class<*>): Boolean = instancesByClass.containsKey(clazz) || parent?.has(clazz) ?: false
+	fun has(clazz: Class<*>): Boolean = instancesByClass.containsKey(clazz) || parent?.has(clazz) ?: false
 
 	@Suppress("UNCHECKED_CAST")
 	@JvmOverloads
@@ -70,9 +79,10 @@ class AsyncInjector(val parent: AsyncInjector? = null, val level: Int = 0) {
 
 			val loaderClass = clazz.getAnnotation(AsyncFactoryClass::class.java)
 			val actualClass = loaderClass?.clazz?.java ?: clazz
-			if (actualClass.isInterface || Modifier.isAbstract(actualClass.modifiers)) invalidOp("Can't instantiate abstract or interface: $actualClass")
+			if (actualClass.isInterface || Modifier.isAbstract(actualClass.modifiers)) invalidOp("Can't instantiate abstract or interface: $actualClass in $ctx")
 			val constructor = actualClass.declaredConstructors.firstOrNull() ?: return null
 			val out = arrayListOf<Any?>()
+			val allInstances = arrayListOf<Any?>()
 
 			for ((paramType, annotations) in constructor.parameterTypes.zip(constructor.parameterAnnotations)) {
 				var isOptional = false
@@ -82,7 +92,7 @@ class AsyncInjector(val parent: AsyncInjector? = null, val level: Int = 0) {
 					for (annotation in annotations) {
 						when (annotation) {
 							is Optional -> isOptional = true
-							else -> i.map(annotation.annotationClass.java as Class<Any>, annotation as Any)
+							else -> i.map(annotation as Any, annotation.annotationClass.java as Class<Any>)
 						}
 					}
 					i
@@ -90,11 +100,13 @@ class AsyncInjector(val parent: AsyncInjector? = null, val level: Int = 0) {
 					this
 				}
 				if (isOptional) {
-					out += if (i.has(paramType)) i.get(paramType, ctx) else null
+					out += if (i.has(paramType)) i.getOrNull(paramType, ctx) else null
 				} else {
-					out += i.get(paramType, ctx)
+					out += i.getOrNull(paramType, ctx) ?: throw NotMappedException(paramType, actualClass, ctx)
 				}
 			}
+			allInstances.addAll(out)
+			constructor.isAccessible = true
 			val instance = constructor.newInstance(*out.toTypedArray())
 
 			val allDeclaredFields = clazz.allDeclaredFields
@@ -108,7 +120,7 @@ class AsyncInjector(val parent: AsyncInjector? = null, val level: Int = 0) {
 					for (annotation in field.annotations) {
 						when (annotation) {
 							is Optional -> isOptional = true
-							else -> i.map(annotation.annotationClass.java as Class<Any>, annotation as Any)
+							else -> i.map(annotation as Any, annotation.annotationClass.java as Class<Any>)
 						}
 					}
 					i
@@ -121,10 +133,17 @@ class AsyncInjector(val parent: AsyncInjector? = null, val level: Int = 0) {
 				} else {
 					i.get(field.type, ctx)
 				}
+				allInstances += res
 				field.set(instance, res)
 			}
 
 			if (instance is AsyncDependency) instance.init()
+
+			for (createdInstance in allInstances) {
+				if (createdInstance is InjectedHandler) {
+					createdInstance.injectedInto(instance)
+				}
+			}
 
 			if (loaderClass != null) {
 				return (instance as AsyncFactory<T>).create()
@@ -138,11 +157,17 @@ class AsyncInjector(val parent: AsyncInjector? = null, val level: Int = 0) {
 		}
 	}
 
+	class NotMappedException(val clazz: Class<*>, val requestedByClass: Class<*>, val ctx: RequestContext) : RuntimeException("Not mapped ${clazz.name} requested by ${requestedByClass.name} in $ctx")
+
 	override fun toString(): String = "AsyncInjector(level=$level, instances=${instancesByClass.size})"
 }
 
 interface AsyncFactory<T> {
 	suspend fun create(): T
+}
+
+interface InjectedHandler {
+	suspend fun injectedInto(instance: Any): Unit
 }
 
 annotation class AsyncFactoryClass(val clazz: KClass<out AsyncFactory<*>>)
