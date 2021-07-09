@@ -1,4 +1,12 @@
-.gradle
-.idea
-build
-log.txt
+/.idea
+/.gradle
+/build
+/out
+/classes
+/web
+/local.properties
+*.ipr
+*.iws
+*.iml
+*.hprof
+
